@@ -1,0 +1,58 @@
+Fluxo final (resumo)
+•
+Step 1: LoadActiveContracts
+•
+Step 2: Parallel com 3 Lambdas (transações D‑1, grupo econômico, sócios)
+•
+Step 3: ProcessTransactions com Choice PF/PJ e Parallel para PJ
+•
+Step 4: ValidateAndEnqueue
+Se quiser, eu já monto o ASL completo agora com:
+•
+Parallel no Step 2
+•
+Map de transações no Step 3
+•
+Choice PF/PJ
+•
+Envio individual por contrato no Step 4
+
+
+Eles “conversam” pelo JSON do estado usando ResultPath.
+•
+LoadTransactions grava o resultado em $.transactions
+•
+ProcessTransactions lê de $.transactions.items
+Trecho chave:
+"LoadTransactions": {
+  "Type": "Task",
+  "Resource": "...:load-transactions",
+  "ResultPath": "$.transactions",
+  "End": true
+}
+Depois:
+"ProcessTransactions": {
+  "Type": "Map",
+  "ItemsPath": "$.transactions.items",
+  ...
+}
+Exemplo prático:
+Input do contrato:
+{ "contractId": "C123" }
+Output da Lambda load-transactions:
+{
+  "items": [
+    { "transactionId": "t1", "counterpartyType": "FISICA" },
+    { "transactionId": "t2", "counterpartyType": "JURIDICA" }
+  ]
+}
+Com ResultPath: "$.transactions", o estado vira:
+{
+  "contractId": "C123",
+  "transactions": {
+    "items": [
+      { "transactionId": "t1", "counterpartyType": "FISICA" },
+      { "transactionId": "t2", "counterpartyType": "JURIDICA" }
+    ]
+  }
+}
