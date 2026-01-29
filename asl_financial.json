@@ -1,5 +1,5 @@
 {
-  "Comment": "Fluxo financeiro PJ - ingestao, enriquecimento e envio",
+  "Comment": "Gestao financeira IMOB Atacado - ingestao, enriquecimento e regras PF/PJ",
   "StartAt": "LoadActiveContracts",
   "States": {
     "LoadActiveContracts": {
@@ -53,7 +53,22 @@
                 }
               }
             ],
-            "Next": "ProcessTransactions"
+            "Next": "CheckHasTransactions"
+          },
+          "CheckHasTransactions": {
+            "Type": "Choice",
+            "Choices": [
+              {
+                "Variable": "$.transactions.hasTransactions",
+                "BooleanEquals": true,
+                "Next": "ProcessTransactions"
+              }
+            ],
+            "Default": "SkipContract"
+          },
+          "SkipContract": {
+            "Type": "Pass",
+            "End": true
           },
           "ProcessTransactions": {
             "Type": "Map",
@@ -69,7 +84,7 @@
                     {
                       "Variable": "$.counterpartyType",
                       "StringEquals": "FISICA",
-                      "Next": "IngestPF"
+                      "Next": "ProcessRulesPF"
                     },
                     {
                       "Variable": "$.counterpartyType",
@@ -77,11 +92,11 @@
                       "Next": "Step3Parallel"
                     }
                   ],
-                  "Default": "IngestPF"
+                  "Default": "ProcessRulesPF"
                 },
-                "IngestPF": {
+                "ProcessRulesPF": {
                   "Type": "Task",
-                  "Resource": "arn:aws:lambda:REGION:ACCOUNT:function:ingest-pf",
+                  "Resource": "arn:aws:lambda:REGION:ACCOUNT:function:process-rules-pf",
                   "End": true
                 },
                 "Step3Parallel": {
@@ -118,15 +133,15 @@
                       }
                     }
                   ],
+                  "Next": "ProcessRulesPJ"
+                },
+                "ProcessRulesPJ": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:lambda:REGION:ACCOUNT:function:process-rules-pj",
                   "End": true
                 }
               }
             },
-            "Next": "ValidateAndEnqueue"
-          },
-          "ValidateAndEnqueue": {
-            "Type": "Task",
-            "Resource": "arn:aws:lambda:REGION:ACCOUNT:function:validate-and-enqueue",
             "End": true
           }
         }
