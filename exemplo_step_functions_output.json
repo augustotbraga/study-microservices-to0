@@ -1,0 +1,269 @@
+A seguir vai um **exemplo “trilha completa” de inputs/outputs** (estado JSON) entre os steps do seu ASL, para você visualizar exatamente o que cada Lambda/integração recebe e devolve.
+Vou assumir 1 contrato, com 2 eventos no arquivo do S3 (um PF e um PJ), e que você já está usando:
+- `LoadTransactions` grava no S3 e retorna `{ hasTransactions, s3: { bucket, key } }`
+- `ProcessTransactions` faz `ItemReader` do S3 e `ItemSelector` para passar **somente** `contra_parte`
+- Em vez de Lambda PF/PJ, você manda para SQS (`sendMessage`)
+
+## 0) Input inicial da execução (exemplo)``` json
+{
+  "referenceDate": "2024-07-15"
+}
+```
+
+ 
+1) LoadActiveContracts (Task Lambda)
+Input que a Lambda recebe
+Por padrão, ela recebe o estado inteiro atual:``` json
+{
+  "referenceDate": "2024-07-15"
+}
+```
+
+Output da Lambda (exemplo)``` json
+{
+  "items": [
+    {
+      "contractId": "CONTRACT123",
+      "referenceDate": "2024-07-15"
+    }
+  ]
+}
+```
+
+Estado após LoadActiveContracts (porque ResultPath: "$.contracts")``` json
+{
+  "referenceDate": "2024-07-15",
+  "contracts": {
+    "items": [
+      {
+        "contractId": "CONTRACT123",
+        "referenceDate": "2024-07-15"
+      }
+    ]
+  }
+}
+```
+
+ 
+2) ProcessContracts (Map INLINE)
+O Map vai iterar em $.contracts.items. Então, para cada contrato, o input do ItemProcessor (INLINE) vira o próprio item do array.
+Input do ItemProcessor para o contrato``` json
+{
+  "contractId": "CONTRACT123",
+  "referenceDate": "2024-07-15"
+}
+```
+
+ 
+3) Step2Parallel (Parallel)
+As 3 branches recebem o mesmo input do contrato.
+3.1) Branch LoadTransactions (Task Lambda)
+Input da Lambda``` json
+{
+  "contractId": "CONTRACT123",
+  "referenceDate": "2024-07-15"
+}
+```
+
+O que a Lambda faz
+Busca transações/eventos do contrato
+Grava no S3, por exemplo:
+Bucket: financial-inputs
+Key: transactions/contract=CONTRACT123/refdate=2024-07-15/transactions.json
+Conteúdo do transactions.json (exemplo array puro):``` json
+[
+  {
+    "eventId": "EVT-001",
+    "contra_parte": {
+      "nome": "João Silva",
+      "tipo": "FISICA",
+      "documento": "123.456.789-00",
+      "valor_total": 1500.0
+    },
+    "outros_campos": { "qualquerCoisa": "..." }
+  },
+  {
+    "eventId": "EVT-002",
+    "contra_parte": {
+      "nome": "Empresa ABC Ltda",
+      "tipo": "JURIDICA",
+      "documento": "12.345.678/0001-90",
+      "valor_total": 25000.0
+    },
+    "outros_campos": { "qualquerCoisa": "..." }
+  }
+]
+```
+
+Output da Lambda (pequeno)``` json
+{
+  "hasTransactions": true,
+  "s3": {
+    "bucket": "financial-inputs",
+    "key": "transactions/contract=CONTRACT123/refdate=2024-07-15/transactions.json"
+  },
+  "count": 2
+}
+```
+
+Estado do contrato após essa branch (por causa de ResultPath: "$.transactions")``` json
+{
+  "contractId": "CONTRACT123",
+  "referenceDate": "2024-07-15",
+  "transactions": {
+    "hasTransactions": true,
+    "s3": {
+      "bucket": "financial-inputs",
+      "key": "transactions/contract=CONTRACT123/refdate=2024-07-15/transactions.json"
+    },
+    "count": 2
+  }
+}
+```
+
+3.2) Branch LoadEconomicGroup (Task Lambda)
+Input``` json
+{
+  "contractId": "CONTRACT123",
+  "referenceDate": "2024-07-15"
+}
+```
+
+Output (exemplo)``` json
+{
+  "groupId": "GRP-999",
+  "name": "Grupo Econômico X"
+}
+```
+
+Estado parcial (com ResultPath: "$.economicGroup")``` json
+{
+  "contractId": "CONTRACT123",
+  "referenceDate": "2024-07-15",
+  "economicGroup": {
+    "groupId": "GRP-999",
+    "name": "Grupo Econômico X"
+  }
+}
+```
+
+3.3) Branch LoadStakeholders (Task Lambda)
+Input``` json
+{
+  "contractId": "CONTRACT123",
+  "referenceDate": "2024-07-15"
+}
+```
+
+Output (exemplo)``` json
+{
+  "items": [
+    { "name": "Stake A", "role": "OWNER" },
+    { "name": "Stake B", "role": "ADMIN" }
+  ]
+}
+```
+
+ 
+4) Depois do Parallel: estado “consolidado” do contrato
+Quando o Parallel termina, você tem o contrato com os três blocos (transactions/economicGroup/stakeholders), e aí vem o Choice.
+Exemplo do estado do contrato:``` json
+{
+  "contractId": "CONTRACT123",
+  "referenceDate": "2024-07-15",
+  "transactions": {
+    "hasTransactions": true,
+    "s3": {
+      "bucket": "financial-inputs",
+      "key": "transactions/contract=CONTRACT123/refdate=2024-07-15/transactions.json"
+    },
+    "count": 2
+  },
+  "economicGroup": {
+    "groupId": "GRP-999",
+    "name": "Grupo Econômico X"
+  },
+  "stakeholders": {
+    "items": [
+      { "name": "Stake A", "role": "OWNER" },
+      { "name": "Stake B", "role": "ADMIN" }
+    ]
+  }
+}
+```
+
+ 
+5) ProcessTransactions (Map DISTRIBUTED + ItemReader + ItemSelector)
+5.1) ItemReader lê do S3
+Ele usa:``` json
+{
+  "Bucket": "financial-inputs",
+  "Key": "transactions/contract=CONTRACT123/refdate=2024-07-15/transactions.json"
+}
+```
+
+E obtém a lista de eventos (2 itens).
+5.2) Iteração do Map: ItemSelector
+Você configurou:``` json
+"ItemSelector": {
+  "$.$": "$$.Map.Item.Value.contra_parte"
+}
+```
+
+Então, cada item processado pelo ItemProcessor vira somente contra_parte.
+Iteração 1 — input do ItemProcessor``` json
+{
+  "nome": "João Silva",
+  "tipo": "FISICA",
+  "documento": "123.456.789-00",
+  "valor_total": 1500.0
+}
+```
+
+Iteração 2 — input do ItemProcessor``` json
+{
+  "nome": "Empresa ABC Ltda",
+  "tipo": "JURIDICA",
+  "documento": "12.345.678/0001-90",
+  "valor_total": 25000.0
+}
+```
+
+ 
+6) CheckCounterpartyType (Choice dentro do ItemProcessor)
+Agora faz sentido ele olhar para $.tipo.
+Iteração 1 (tipo = FISICA) → vai para EnqueueRulesPF
+Iteração 2 (tipo = JURIDICA) → vai para EnqueueRulesPJ
+ 
+7) EnqueueRulesPF / EnqueueRulesPJ (SQS sendMessage)
+Você usa:``` json
+"MessageBody.$": "States.JsonToString($)"
+```
+
+Ou seja, o corpo enviado para SQS é o JSON do item (string).
+Mensagem enviada na PF (exemplo)
+Body (string):``` json
+{"nome":"João Silva","tipo":"FISICA","documento":"123.456.789-00","valor_total":1500.0}
+```
+
+Mensagem enviada na PJ (exemplo)
+Body (string):``` json
+{"nome":"Empresa ABC Ltda","tipo":"JURIDICA","documento":"12.345.678/0001-90","valor_total":25000.0}
+```
+
+Output do sendMessage (resposta do SQS)
+O Step Functions recebe algo como metadados do envio (ex.: MessageId). O formato exato varia, mas a ideia é que não volta o processamento, só a confirmação do enqueue.
+ 
+Dois avisos práticos (pra não te pegar depois)
+Rastreabilidade: como você está mandando só contra_parte, você não consegue relacionar facilmente o resultado com contractId/eventId/referenceDate do evento original.
+Se você precisar disso depois, recomendo trocar o ItemSelector para mandar um envelope mínimo, por ex.:``` json
+   {
+     "contractId.$": "$.contractId",
+     "referenceDate.$": "$.referenceDate",
+     "counterparty.$": "$$.Map.Item.Value.contra_parte",
+     "eventId.$": "$$.Map.Item.Value.eventId"
+   }
+```
+
+(ainda “quase só contraparte”, mas com chave de correlação)
+Formato do arquivo no S3: o mais simples é ser um array puro (lista) como no exemplo. Se você gravar { "eventos": [...] }, dá para ajustar, mas complica a leitura.
