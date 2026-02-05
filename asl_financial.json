@@ -1,0 +1,133 @@
+{
+  "Comment": "Gestao financeira IMOB Atacado - ingestao, enriquecimento e regras PF/PJ",
+  "StartAt": "LoadActiveContracts",
+  "States": {
+    "LoadActiveContracts": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:REGION:ACCOUNT:function:load-active-contracts",
+      "ResultPath": "$.contracts",
+      "Next": "ProcessContracts"
+    },
+    "ProcessContracts": {
+      "Type": "Map",
+      "ItemsPath": "$.contracts.items",
+      "MaxConcurrency": 50,
+      "ItemProcessor": {
+        "ProcessorConfig": { "Mode": "INLINE" },
+        "StartAt": "Step2Parallel",
+        "States": {
+          "Step2Parallel": {
+            "Type": "Parallel",
+            "Branches": [
+              {
+                "StartAt": "LoadTransactions",
+                "States": {
+                  "LoadTransactions": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:lambda:REGION:ACCOUNT:function:load-transactions",
+                    "ResultPath": "$.transactions",
+                    "End": true
+                  }
+                }
+              },
+              {
+                "StartAt": "LoadEconomicGroup",
+                "States": {
+                  "LoadEconomicGroup": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:lambda:REGION:ACCOUNT:function:load-economic-group",
+                    "ResultPath": "$.economicGroup",
+                    "End": true
+                  }
+                }
+              },
+              {
+                "StartAt": "LoadStakeholders",
+                "States": {
+                  "LoadStakeholders": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:lambda:REGION:ACCOUNT:function:load-stakeholders",
+                    "ResultPath": "$.stakeholders",
+                    "End": true
+                  }
+                }
+              }
+            ],
+            "Next": "CheckHasTransactions"
+          },
+          "CheckHasTransactions": {
+            "Type": "Choice",
+            "Choices": [
+              {
+                "Variable": "$.transactions.hasTransactions",
+                "BooleanEquals": true,
+                "Next": "ProcessTransactions"
+              }
+            ],
+            "Default": "SkipContract"
+          },
+          "SkipContract": {
+            "Type": "Pass",
+            "End": true
+          },
+          "ProcessTransactions": {
+            "Type": "Map",
+            "MaxConcurrency": 100,
+            "ItemReader": {
+              "Resource": "arn:aws:states:::s3:getObject",
+              "Parameters": {
+                "Bucket.$": "$.transactions.s3.bucket",
+                "Key.$": "$.transactions.s3.key"
+              }
+            },
+            "ItemSelector": {
+              "$.$": "$$.Map.Item.Value.contra_parte"
+            },
+            "ItemProcessor": {
+              "ProcessorConfig": { "Mode": "DISTRIBUTED" },
+              "StartAt": "CheckCounterpartyType",
+              "States": {
+                "CheckCounterpartyType": {
+                  "Type": "Choice",
+                  "Choices": [
+                    {
+                      "Variable": "$.tipo",
+                      "StringEquals": "FISICA",
+                      "Next": "EnqueueRulesPF"
+                    },
+                    {
+                      "Variable": "$.tipo",
+                      "StringEquals": "JURIDICA",
+                      "Next": "EnqueueRulesPJ"
+                    }
+                  ],
+                  "Default": "EnqueueRulesPF"
+                },
+                "EnqueueRulesPF": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::sqs:sendMessage",
+                  "Parameters": {
+                    "QueueUrl": "https://sqs.REGION.amazonaws.com/ACCOUNT/queue-rules-pf",
+                    "MessageBody.$": "States.JsonToString($)"
+                  },
+                  "End": true
+                },
+                "EnqueueRulesPJ": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::sqs:sendMessage",
+                  "Parameters": {
+                    "QueueUrl": "https://sqs.REGION.amazonaws.com/ACCOUNT/queue-rules-pj",
+                    "MessageBody.$": "States.JsonToString($)"
+                  },
+                  "End": true
+                }
+              }
+            },
+            "End": true
+          }
+        }
+      },
+      "End": true
+    }
+  }
+}
